@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>D1 – rysunek + rozpiska</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f3f4f6;padding:16px}
+    .wrap{max-width:1250px;margin:0 auto}
+    .card{background:#fff;border-radius:14px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.08)}
+    .grid{display:grid;grid-template-columns:380px 1fr;gap:12px;margin-top:12px}
+    label{font-size:14px;color:#334155}
+    .row{display:grid;grid-template-columns:1fr 170px;gap:10px;align-items:center;margin-bottom:10px}
+    input,select{width:170px;padding:8px 10px;font-size:16px}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+    table{width:100%;border-collapse:collapse;margin-top:12px}
+    th,td{border-bottom:1px solid #e2e8f0;padding:8px 10px;text-align:left;font-size:14px}
+    th{color:#0f172a;background:#f8fafc;position:sticky;top:0}
+    @media (max-width:980px){
+      .grid{grid-template-columns:1fr}
+      input,select{width:100%}
+      .row{grid-template-columns:1fr}
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h2 style="margin:0 0 6px;">D1 – rysunek techniczny + rozpiska formatek</h2>
+
+    <div class="grid">
+      <div>
+        <div class="row">
+          <label>Szerokość W (mm)</label>
+          <input id="W" inputmode="numeric" value="600" />
+        </div>
+        <div class="row">
+          <label>Wysokość H (mm)</label>
+          <input id="H" inputmode="numeric" value="800" />
+        </div>
+        <div class="row">
+          <label>Głębokość D (mm)</label>
+          <input id="D" inputmode="numeric" value="520" />
+        </div>
+        <div class="row">
+          <label>Liczba półek</label>
+          <select id="shelves">
+            <option value="0">0</option>
+            <option value="1" selected>1</option>
+            <option value="2">2</option>
+          </select>
+        </div>
+        <div class="row">
+          <label>Front uchylny</label>
+          <select id="hinge">
+            <option value="L" selected>lewy (zawiasy po lewej)</option>
+            <option value="R">prawy (zawiasy po prawej)</option>
+          </select>
+        </div>
+      </div>
+
+      <div>
+        <div id="drawing"></div>
+        <div id="cutlist"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const el = (id) => document.getElementById(id);
+
+  const RANGE = {
+    W: {min:300, max:750},
+    H: {min:600, max:900},
+    D: {min:400, max:580}
+  };
+
+  // Stałe techniczne (nie pokazujemy)
+  const t = 18;
+
+  const state = { W:600, H:800, D:520 };
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  function marks(n){ return n<=0 ? "" : (n===1 ? "‾" : "‾‾"); }
+  function dimStr(w,h,mw=0,mh=0){ return `${marks(mw)}${w} × ${marks(mh)}${h}`; }
+
+  function svgDefs(){
+    return `
+      <defs>
+        <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+          <path d="M0,0 L10,5 L0,10 Z" fill="rgba(15,23,42,0.85)"></path>
+        </marker>
+      </defs>
+    `;
+  }
+  function dimLine(x1,y1,x2,y2,label){
+    const mx=(x1+x2)/2, my=(y1+y2)/2;
+    return `
+      <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
+            stroke="rgba(15,23,42,0.85)" stroke-width="1.6"
+            marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+      <rect x="${mx-22}" y="${my-10}" width="44" height="18" rx="6"
+            fill="rgba(255,255,255,0.9)" stroke="rgba(148,163,184,0.6)"/>
+      <text x="${mx}" y="${my+4}" text-anchor="middle" font-size="12" fill="rgba(15,23,42,0.9)">${label}</text>
+    `;
+  }
+  function extLine(x1,y1,x2,y2){
+    return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(100,116,139,0.65)" stroke-width="1.2"/>`;
+  }
+
+  // Kwadraty zawiasów (2 szt.)
+  function hingeSquares(x, y, w, h, side){
+    const size = 12;
+    const padEdge = 10;
+    const padTop = 100;
+    const padBot = 100;
+
+    const hx = (side === "L") ? (x + padEdge) : (x + w - padEdge - size);
+    const hy1 = y + padTop;
+    const hy2 = y + h - padBot - size;
+
+    return `
+      <rect x="${hx}" y="${hy1}" width="${size}" height="${size}" fill="none" stroke="rgba(15,23,42,0.8)" stroke-width="2"/>
+      <rect x="${hx}" y="${hy2}" width="${size}" height="${size}" fill="none" stroke="rgba(15,23,42,0.8)" stroke-width="2"/>
+    `;
+  }
+
+  // Przerywane przekątne (kierunek uchylania)
+  function swingDashedLines(x,y,w,h,side){
+    const pad = 12;
+    const xL = x + pad, xR = x + w - pad;
+    const yT = y + pad, yB = y + h - pad, yM = y + h/2;
+
+    const tipX = (side === "L") ? xR : xL;   // strona klamki
+    const startX = (side === "L") ? xL : xR; // strona zawiasów
+    const dash = `stroke-dasharray="18 12"`;
+
+    return `
+      <line x1="${startX}" y1="${yT}" x2="${tipX}" y2="${yM}" stroke="rgba(15,23,42,0.45)" stroke-width="2.0" ${dash}/>
+      <line x1="${startX}" y1="${yB}" x2="${tipX}" y2="${yM}" stroke="rgba(15,23,42,0.45)" stroke-width="2.0" ${dash}/>
+    `;
+  }
+
+  function parseIfValid(raw, r){
+    const v = Number(String(raw).replace(",", "."));
+    if (!Number.isFinite(v)) return null;
+    if (v < r.min || v > r.max) return null;
+    return Math.round(v);
+  }
+
+  function render(){
+    const W = state.W, H = state.H, D = state.D;
+    const shelvesCount = Number(el("shelves").value);
+    const hinge = el("hinge").value; // L/R
+
+    // --- WYMIARY ---
+    const frontW = W - 4;
+    const frontH = H - 4;
+
+    const sideH = H - t;
+    const railShown = W - 36;
+    const railH = 100;
+
+    const shelfW = W - 37;
+
+    // ✅ JEDYNA ZMIANA: półka zależy od D
+    const shelfD = D - 5;
+
+    const hdfW = W - 4;
+    const hdfH = H - 4;
+
+    // pozycje półek
+    let shelfFracs=[];
+    if (shelvesCount===1) shelfFracs=[0.5];
+    if (shelvesCount===2) shelfFracs=[1/3,2/3];
+
+    // --- SVG (ładny widok jak wcześniej) ---
+    const paperW = 980, paperH = 620;
+    const margin = {l:70, r:40, t:50, b:80};
+    const areaW = paperW - margin.l - margin.r;
+    const areaH = paperH - margin.t - margin.b;
+
+    const s = Math.min(areaW / W, areaH / H);
+    const cabW = W * s;
+    const cabH = H * s;
+    const x0 = margin.l + (areaW - cabW)/2;
+    const y0 = margin.t + (areaH - cabH)/2;
+
+    const tpx = Math.max(6, t*s);
+
+    const innerX = x0 + tpx;
+    const innerY = y0 + tpx;
+    const innerW = cabW - 2*tpx;
+    const innerH = cabH - 2*tpx;
+
+    const shelfTpx = Math.max(5, t*s*0.8);
+
+    function yFromBottomFrac(frac){
+      const yBottom = innerY + innerH;
+      return yBottom - innerH*frac;
+    }
+
+    const shelvesSvg = shelfFracs.map(fr=>{
+      const y = yFromBottomFrac(fr) - shelfTpx/2;
+      const wRatio = shelfW/W;
+      const sw = innerW*wRatio;
+      const sx = innerX + (innerW - sw)/2;
+      return `<rect x="${sx}" y="${y}" width="${sw}" height="${shelfTpx}"
+                    fill="rgba(239,68,68,0.90)" stroke="rgba(185,28,28,0.95)" stroke-width="1.6"/>`;
+    }).join("");
+
+    const outline = `<rect x="${x0}" y="${y0}" width="${cabW}" height="${cabH}" fill="none"
+                          stroke="rgba(15,23,42,0.95)" stroke-width="2.6"/>`;
+
+    const carcass = `
+      <rect x="${x0}" y="${y0}" width="${tpx}" height="${cabH}" fill="rgba(15,23,42,0.03)"
+            stroke="rgba(15,23,42,0.9)" stroke-width="2.2"/>
+      <rect x="${x0+cabW-tpx}" y="${y0}" width="${tpx}" height="${cabH}" fill="rgba(15,23,42,0.03)"
+            stroke="rgba(15,23,42,0.9)" stroke-width="2.2"/>
+      <rect x="${x0}" y="${y0}" width="${cabW}" height="${tpx}" fill="rgba(15,23,42,0.02)"
+            stroke="rgba(15,23,42,0.9)" stroke-width="2.2"/>
+      <rect x="${x0}" y="${y0+cabH-tpx}" width="${cabW}" height="${tpx}" fill="rgba(15,23,42,0.02)"
+            stroke="rgba(15,23,42,0.9)" stroke-width="2.2"/>
+    `;
+
+    const doorRect = `<rect x="${innerX}" y="${innerY}" width="${innerW}" height="${innerH}"
+                          fill="none" stroke="rgba(15,23,42,0.30)" stroke-width="1.6" stroke-dasharray="12 8"/>`;
+    const swingSvg = swingDashedLines(innerX, innerY, innerW, innerH, hinge);
+    const hingesSvg = hingeSquares(innerX, innerY, innerW, innerH, hinge);
+
+    const dimOffset = 30;
+    const wY = y0 + cabH + dimOffset;
+    const hX = x0 - dimOffset;
+
+    const dimsSvg = `
+      ${extLine(x0, y0+cabH, x0, wY)}
+      ${extLine(x0+cabW, y0+cabH, x0+cabW, wY)}
+      ${dimLine(x0, wY, x0+cabW, wY, String(W))}
+      ${extLine(hX, y0, x0, y0)}
+      ${extLine(hX, y0+cabH, x0, y0+cabH)}
+      ${dimLine(hX, y0, hX, y0+cabH, String(H))}
+    `;
+
+    el("drawing").innerHTML = `
+      <svg width="100%" style="max-width:980px" viewBox="0 0 ${paperW} ${paperH}" xmlns="http://www.w3.org/2000/svg">
+        ${svgDefs()}
+        <rect x="10" y="10" width="${paperW-20}" height="${paperH-20}" fill="white" stroke="rgba(15,23,42,0.25)"/>
+        <text x="${margin.l}" y="34" font-size="18" font-weight="700" fill="rgba(15,23,42,0.9)">WIDOK OD PRZODU (D1)</text>
+        ${outline}
+        ${carcass}
+        ${shelvesSvg}
+        ${doorRect}
+        ${swingSvg}
+        ${hingesSvg}
+        ${dimsSvg}
+      </svg>
+    `;
+
+    // --- CUTLIST ---
+    const parts = [
+      { name:"Laweta (dno)", qty:1, w:W,     h:D,      mw:1, mh:2 },
+      { name:"Pion (bok)",   qty:2, w:sideH, h:D,      mw:1, mh:0 },
+      { name:"Poprzeczka górna", qty:2, w:railShown, h:railH, mw:1, mh:0 },
+      ...(shelvesCount>0 ? [{ name:"Półka", qty:shelvesCount, w:shelfW, h:shelfD, mw:1, mh:0 }] : []),
+      { name:"Plecy HDF", qty:1, w:hdfW, h:hdfH, mw:0, mh:0 },
+      { name:"Front", qty:1, w:frontW, h:frontH, mw:0, mh:0 }
+    ];
+
+    const rows = parts.map(p=>`
+      <tr>
+        <td><b>${p.name}</b></td>
+        <td class="mono">${dimStr(p.w,p.h,p.mw,p.mh)}</td>
+        <td class="mono">${p.qty}</td>
+      </tr>
+    `).join("");
+
+    el("cutlist").innerHTML = `
+      <h3 style="margin:16px 0 6px;">Rozpiska formatek (D1)</h3>
+      <table>
+        <thead><tr><th>Element</th><th>Wymiary (mm)</th><th>Ilość</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  // Soft input: nie przeszkadza w pisaniu (np. 783), render tylko przy poprawnej wartości
+  function onSoftInput(key){
+    const raw = el(key).value;
+    const v = parseIfValid(raw, RANGE[key]);
+    if (v !== null){
+      state[key] = v;
+      render();
+    }
+  }
+
+  // Blur: przycinamy dopiero po wyjściu z pola
+  function onHardBlur(key){
+    const raw = el(key).value;
+    let v = Number(String(raw).replace(",", "."));
+    if (!Number.isFinite(v)) v = state[key];
+    v = clamp(Math.round(v), RANGE[key].min, RANGE[key].max);
+    state[key] = v;
+    el(key).value = v;
+    render();
+  }
+
+  ["W","H","D"].forEach(key=>{
+    el(key).addEventListener("input", ()=>onSoftInput(key));
+    el(key).addEventListener("blur",  ()=>onHardBlur(key));
+  });
+
+  ["shelves","hinge"].forEach(id=>el(id).addEventListener("input", render));
+
+  render();
+</script>
+</body>
+</html>

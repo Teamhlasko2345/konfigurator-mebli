@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Cabinet App</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f3f4f6;padding:16px}
+    .wrap{max-width:1250px;margin:0 auto}
+    .card{background:#fff;border-radius:14px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.08)}
+
+    /* ✅ stabilna lewa kolumna, rysunek zawsze ma miejsce */
+    .grid{display:grid;grid-template-columns:320px minmax(0,1fr);gap:14px;margin-top:10px}
+
+    label{font-size:13px;color:#334155;margin-bottom:6px;display:block}
+
+    /* ✅ wszystkie pola jak "Typ": label nad polem */
+    .row{margin-bottom:12px}
+    input,select{width:100%;box-sizing:border-box;padding:8px 10px;font-size:15px;border:1px solid #cbd5e1;border-radius:10px;background:#fff}
+
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace}
+    table{width:100%;border-collapse:collapse;margin-top:12px}
+    th,td{border-bottom:1px solid #e2e8f0;padding:8px 10px;text-align:left;font-size:14px}
+    th{color:#0f172a;background:#f8fafc;position:sticky;top:0}
+    .badge{display:inline-block;padding:2px 8px;border:1px solid rgba(15,23,42,.12);border-radius:999px;background:#f8fafc;color:#0f172a;font-size:12px;margin-left:8px}
+    .hint{color:#64748b;font-size:13px;margin-top:6px}
+
+    @media (max-width:980px){
+      .grid{grid-template-columns:1fr}
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h2 style="margin:0 0 6px;">
+      Cabinet App <span class="badge">D1 / D2 / ZLEW / OPEN / CARGO / ZMYWARKA</span>
+    </h2>
+
+    <div class="grid">
+      <div>
+        <div class="row">
+          <label>Typ</label>
+          <select id="type">
+            <option value="D1">D1 – jednodrzwiowa</option>
+            <option value="D2">D2 – dwudrzwiowa (szczelina 4mm)</option>
+            <option value="D1_ZLEW">D1-ZLEW – pod zlew (HDF 150 / poprzeczka 140 / zawias 200/100)</option>
+            <option value="D2_ZLEW">D2-ZLEW – pod zlew dwudrzwiowa</option>
+            <option value="OPEN">OPEN – szafka otwarta (bez frontu)</option>
+            <option value="CARGO">CARGO – wysuw (krzyż na froncie)</option>
+            <option value="ZMYWARKA" selected>ZMYWARKA – front + formatka (450/600, D=520)</option>
+          </select>
+        </div>
+
+        <!-- W: input dla normalnych typów + select dla ZMYWARKA -->
+        <div class="row" id="WInputRow">
+          <label>Szerokość W (mm)</label>
+          <input id="W" inputmode="numeric" value="600" />
+        </div>
+        <div class="row" id="WSelectRow" style="display:none;">
+          <label>Szerokość W (mm)</label>
+          <select id="WSelect">
+            <option value="450">450</option>
+            <option value="600" selected>600</option>
+          </select>
+        </div>
+
+        <div class="row">
+          <label>Wysokość H (mm)</label>
+          <input id="H" inputmode="numeric" value="800" />
+        </div>
+
+        <div class="row">
+          <label>Głębokość D (mm)</label>
+          <input id="D" inputmode="numeric" value="520" />
+        </div>
+
+        <div class="row" id="shelvesRow">
+          <label>Liczba półek</label>
+          <select id="shelves">
+            <option value="0" selected>0</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+          </select>
+        </div>
+
+        <div class="row" id="hingeRow">
+          <label>Front uchylny</label>
+          <select id="hinge">
+            <option value="L" selected>lewy</option>
+            <option value="R">prawy</option>
+          </select>
+        </div>
+
+        <div class="hint" id="rulesHint"></div>
+      </div>
+
+      <div>
+        <div id="drawing"></div>
+        <div id="cutlist"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const t = 18;
+
+const RULES = {
+  D1:       { W:{min:300,max:750},  H:{min:600,max:900}, D:{min:400,max:580} },
+  D2:       { W:{min:600,max:1200}, H:{min:600,max:900}, D:{min:400,max:580}, gap:4, outerClear:4 },
+
+  D1_ZLEW:  { W:{min:300,max:750},  H:{min:600,max:900}, D:{min:400,max:580}, hdfH:150, railH:140, hingeTop:200, hingeBot:100 },
+  D2_ZLEW:  { W:{min:600,max:1200}, H:{min:600,max:900}, D:{min:400,max:580}, gap:4, outerClear:4, hdfH:150, railH:140, hingeTop:200, hingeBot:100 },
+
+  OPEN:     { W:{min:200,max:1200}, H:{min:600,max:900}, D:{min:400,max:580} },
+  CARGO:    { W:{min:150,max:500},  H:{min:600,max:900}, D:{min:400,max:580} },
+
+  ZMYWARKA: { W:{min:450,max:600},  H:{min:600,max:900}, D:{min:520,max:520}, allowedW:[450,600], fixedD:520 }
+};
+
+const el = (id) => document.getElementById(id);
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+
+function marks(n){ return n<=0 ? "" : (n===1 ? "‾" : "‾‾"); }
+function dimStr(w,h,mw=0,mh=0){ return `${marks(mw)}${w} × ${marks(mh)}${h}`; }
+function formatDims(part){
+  const order = part.order || "WH";
+  if (order === "HW") return dimStr(part.h, part.w, part.mh || 0, part.mw || 0);
+  return dimStr(part.w, part.h, part.mw || 0, part.mh || 0);
+}
+
+// ---------- SVG helpers ----------
+function svgDefs(){
+  return `
+    <defs>
+      <marker id="arrow" markerWidth="12" markerHeight="12" refX="9" refY="6" orient="auto">
+        <path d="M0,0 L12,6 L0,12 Z" fill="rgba(15,23,42,0.85)"></path>
+      </marker>
+    </defs>
+  `;
+}
+function extLine(x1,y1,x2,y2){
+  return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(100,116,139,0.65)" stroke-width="1.4"/>`;
+}
+function dimLine(x1,y1,x2,y2,label){
+  const mx=(x1+x2)/2, my=(y1+y2)/2;
+  return `
+    <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
+          stroke="rgba(15,23,42,0.85)" stroke-width="2.0"
+          marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <rect x="${mx-30}" y="${my-14}" width="60" height="26" rx="8"
+          fill="rgba(255,255,255,0.95)" stroke="rgba(148,163,184,0.7)"/>
+    <text x="${mx}" y="${my+7}" text-anchor="middle" font-size="16" font-weight="700"
+          fill="rgba(15,23,42,0.92)">${label}</text>
+  `;
+}
+function swingDashedLines(x,y,w,h,side){
+  const pad = 12;
+  const xL = x + pad, xR = x + w - pad;
+  const yT = y + pad, yB = y + h - pad, yM = y + h/2;
+  const tipX = (side === "L") ? xR : xL;
+  const startX = (side === "L") ? xL : xR;
+  const dash = `stroke-dasharray="18 12"`;
+  return `
+    <line x1="${startX}" y1="${yT}" x2="${tipX}" y2="${yM}" stroke="rgba(15,23,42,0.45)" stroke-width="2.2" ${dash}/>
+    <line x1="${startX}" y1="${yB}" x2="${tipX}" y2="${yM}" stroke="rgba(15,23,42,0.45)" stroke-width="2.2" ${dash}/>
+  `;
+}
+function hingeSquaresCustom(x, y, w, h, side, topFromTop, bottomFromBottom){
+  const size = 12;
+  const padEdge = 10;
+  const hx = (side === "L") ? (x + padEdge) : (x + w - padEdge - size);
+  const hyTop = y + topFromTop;
+  const hyBot = y + h - bottomFromBottom - size;
+  return `
+    <rect x="${hx}" y="${hyTop}" width="${size}" height="${size}" fill="none" stroke="rgba(15,23,42,0.8)" stroke-width="2"/>
+    <rect x="${hx}" y="${hyBot}" width="${size}" height="${size}" fill="none" stroke="rgba(15,23,42,0.8)" stroke-width="2"/>
+  `;
+}
+function dashedX(x,y,w,h){
+  const pad = 10;
+  const x1 = x + pad, y1 = y + pad;
+  const x2 = x + w - pad, y2 = y + h - pad;
+  const dash = `stroke-dasharray="14 10"`;
+  return `
+    <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="rgba(15,23,42,0.45)" stroke-width="2.4" ${dash}/>
+    <line x1="${x1}" y1="${y2}" x2="${x2}" y2="${y1}" stroke="rgba(15,23,42,0.45)" stroke-width="2.4" ${dash}/>
+  `;
+}
+function dashedV(x,y,w,h){
+  const pad = 10;
+  const xL = x + pad;
+  const xR = x + w - pad;
+  const xM = x + w/2;
+  const yB = y + h - pad;
+  const yT = y + pad;
+  const dash = `stroke-dasharray="18 12"`;
+  return `
+    <line x1="${xL}" y1="${yB}" x2="${xM}" y2="${yT}" stroke="rgba(15,23,42,0.45)" stroke-width="2.2" ${dash}/>
+    <line x1="${xM}" y1="${yT}" x2="${xR}" y2="${yB}" stroke="rgba(15,23,42,0.45)" stroke-width="2.2" ${dash}/>
+  `;
+}
+
+// ---------- SILNIK ----------
+function basePartsCarcass(W,H,D){
+  const sideH = H - t;
+  return [
+    { name:"Laweta (dno)", qty:1, w:W,     h:D,      mw:1, mh:2 },
+    { name:"Pion (bok)",   qty:2, w:sideH, h:D,      mw:1, mh:0 }
+  ];
+}
+function basePartsShelves(W,D,shelves){
+  if (!shelves) return [];
+  const shelfW = W - 37;
+  const shelfD = D - 5;
+  return [{ name:"Półka", qty:shelves, w:shelfW, h:shelfD, mw:1, mh:0 }];
+}
+
+function computeD1({W,H,D,shelves,hinge}){
+  const frontW = W - 4, frontH = H - 4;
+  const hdfW = W - 4, hdfH = H - 4;
+  const parts = [
+    ...basePartsCarcass(W,H,D),
+    { name:"Poprzeczka górna", qty:2, w:W-36, h:100, mw:1, mh:0 },
+    ...basePartsShelves(W,D,shelves),
+    { name:"Plecy HDF", qty:1, w:hdfW, h:hdfH, order:"HW" },
+    { name:"Front", qty:1, w:frontW, h:frontH, order:"HW" }
+  ];
+  return { title:"D1", doorsType:"single", hingeSide:hinge,
+           hinge:{ topFromTop:100, bottomFromBottom:100 }, shelves, parts };
+}
+
+function computeD2({W,H,D,shelves}){
+  const frontH = H - 4;
+  const gap = RULES.D2.gap, outer = RULES.D2.outerClear;
+  const usable = W - outer - gap;
+  const frontWL = Math.floor(usable/2);
+  const frontWP = usable - frontWL;
+  const hdfW = W - 4, hdfH = H - 4;
+  const parts = [
+    ...basePartsCarcass(W,H,D),
+    { name:"Poprzeczka górna", qty:2, w:W-36, h:100, mw:1, mh:0 },
+    ...basePartsShelves(W,D,shelves),
+    { name:"Plecy HDF", qty:1, w:hdfW, h:hdfH, order:"HW" },
+    { name:"Front lewy", qty:1, w:frontWL, h:frontH, order:"HW" },
+    { name:"Front prawy", qty:1, w:frontWP, h:frontH, order:"HW" }
+  ];
+  return { title:"D2", doorsType:"double",
+           hinge:{ topFromTop:100, bottomFromBottom:100 }, shelves, parts };
+}
+
+function computeD1Zlew({W,H,D,shelves,hinge}){
+  const frontW = W - 4, frontH = H - 4;
+  const hdfW = W - 4, hdfH = RULES.D1_ZLEW.hdfH;
+  const railW = W - 36, railH = RULES.D1_ZLEW.railH;
+  const parts = [
+    ...basePartsCarcass(W,H,D),
+    { name:"Poprzeczka (przód)", qty:1, w:railW, h:railH, mw:1, mh:0 },
+    ...basePartsShelves(W,D,shelves),
+    { name:"Plecy HDF", qty:1, w:hdfW, h:hdfH, order:"HW" },
+    { name:"Front", qty:1, w:frontW, h:frontH, order:"HW" }
+  ];
+  return { title:"D1-ZLEW", doorsType:"single", hingeSide:hinge,
+           hinge:{ topFromTop:RULES.D1_ZLEW.hingeTop, bottomFromBottom:RULES.D1_ZLEW.hingeBot }, shelves, parts };
+}
+
+function computeD2Zlew({W,H,D,shelves}){
+  const frontH = H - 4;
+  const gap = RULES.D2_ZLEW.gap, outer = RULES.D2_ZLEW.outerClear;
+  const usable = W - outer - gap;
+  const frontWL = Math.floor(usable/2);
+  const frontWP = usable - frontWL;
+  const hdfW = W - 4, hdfH = RULES.D2_ZLEW.hdfH;
+  const railW = W - 36, railH = RULES.D2_ZLEW.railH;
+  const parts = [
+    ...basePartsCarcass(W,H,D),
+    { name:"Poprzeczka (przód)", qty:1, w:railW, h:railH, mw:1, mh:0 },
+    ...basePartsShelves(W,D,shelves),
+    { name:"Plecy HDF", qty:1, w:hdfW, h:hdfH, order:"HW" },
+    { name:"Front lewy", qty:1, w:frontWL, h:frontH, order:"HW" },
+    { name:"Front prawy", qty:1, w:frontWP, h:frontH, order:"HW" }
+  ];
+  return { title:"D2-ZLEW", doorsType:"double",
+           hinge:{ topFromTop:RULES.D2_ZLEW.hingeTop, bottomFromBottom:RULES.D2_ZLEW.hingeBot }, shelves, parts };
+}
+
+function computeOpen({W,H,D,shelves}){
+  const hdfW = W - 4, hdfH = H - 4;
+  const parts = [
+    ...basePartsCarcass(W,H,D),
+    { name:"Poprzeczka górna", qty:2, w:W-36, h:100, mw:1, mh:0 },
+    ...basePartsShelves(W,D,shelves),
+    { name:"Plecy HDF", qty:1, w:hdfW, h:hdfH, order:"HW" }
+  ];
+  return { title:"OPEN", doorsType:"none", shelves, parts };
+}
+
+function computeCargo({W,H,D}){
+  const frontW = W - 4, frontH = H - 4;
+  const hdfW = W - 4, hdfH = H - 4;
+  const parts = [
+    ...basePartsCarcass(W,H,D),
+    { name:"Poprzeczka górna", qty:2, w:W-36, h:100, mw:1, mh:0 },
+    { name:"Plecy HDF", qty:1, w:hdfW, h:hdfH, order:"HW" },
+    { name:"Front", qty:1, w:frontW, h:frontH, order:"HW" }
+  ];
+  return { title:"CARGO", doorsType:"cargo", shelves:0, parts };
+}
+
+function computeZmywarka({W,H}){
+  const frontW = W - 4;
+  const frontH = H - 4;
+  const parts = [
+    { name:"Front", qty:1, w:frontW, h:frontH, order:"HW" },
+    { name:"Formatka", qty:1, w:W, h:520 }
+  ];
+  return { title:"ZMYWARKA", doorsType:"zmywarka", shelves:0, parts };
+}
+
+function computeCabinet(type, params){
+  if (type==="D1") return computeD1(params);
+  if (type==="D2") return computeD2(params);
+  if (type==="D1_ZLEW") return computeD1Zlew(params);
+  if (type==="D2_ZLEW") return computeD2Zlew(params);
+  if (type==="OPEN") return computeOpen(params);
+  if (type==="CARGO") return computeCargo(params);
+  if (type==="ZMYWARKA") return computeZmywarka(params);
+  return computeD1(params);
+}
+
+// ---------- RENDER ----------
+function renderDrawing(W,H, model){
+  const paperW = 980, paperH = 620;
+  const margin = {l:70, r:40, t:50, b:80};
+  const areaW = paperW - margin.l - margin.r;
+  const areaH = paperH - margin.t - margin.b;
+
+  const s = Math.min(areaW / W, areaH / H);
+  const cabW = W * s;
+  const cabH = H * s;
+  const x0 = margin.l + (areaW - cabW)/2;
+  const y0 = margin.t + (areaH - cabH)/2;
+
+  const tpx = Math.max(6, t*s);
+  const innerX = x0 + tpx;
+  const innerY = y0 + tpx;
+  const innerW = cabW - 2*tpx;
+  const innerH = cabH - 2*tpx;
+
+  let shelfFracs=[];
+  if (model.shelves===1) shelfFracs=[0.5];
+  if (model.shelves===2) shelfFracs=[1/3,2/3];
+
+  const shelfTpx = Math.max(5, t*s*0.8);
+  function yFromBottomFrac(frac){
+    const yBottom = innerY + innerH;
+    return yBottom - innerH*frac;
+  }
+  const shelvesSvg = shelfFracs.map(fr=>{
+    const y = yFromBottomFrac(fr) - shelfTpx/2;
+    const sw = innerW * ((W - 37) / W);
+    const sx = innerX + (innerW - sw)/2;
+    return `<rect x="${sx}" y="${y}" width="${sw}" height="${shelfTpx}"
+                  fill="rgba(239,68,68,0.90)" stroke="rgba(185,28,28,0.95)" stroke-width="1.6"/>`;
+  }).join("");
+
+  const outline = `<rect x="${x0}" y="${y0}" width="${cabW}" height="${cabH}" fill="none"
+                        stroke="rgba(15,23,42,0.95)" stroke-width="2.6"/>`;
+
+  let carcass = "";
+  if (model.title !== "ZMYWARKA"){
+    carcass = `
+      <rect x="${x0}" y="${y0}" width="${tpx}" height="${cabH}" fill="rgba(15,23,42,0.03)"
+            stroke="rgba(15,23,42,0.9)" stroke-width="2.2"/>
+      <rect x="${x0+cabW-tpx}" y="${y0}" width="${tpx}" height="${cabH}" fill="rgba(15,23,42,0.03)"
+            stroke="rgba(15,23,42,0.9)" stroke-width="2.2"/>
+      <rect x="${x0}" y="${y0}" width="${cabW}" height="${tpx}" fill="rgba(15,23,42,0.02)"
+            stroke="rgba(15,23,42,0.9)" stroke-width="2.2"/>
+      <rect x="${x0}" y="${y0+cabH-tpx}" width="${cabW}" height="${tpx}" fill="rgba(15,23,42,0.02)"
+            stroke="rgba(15,23,42,0.9)" stroke-width="2.2"/>
+    `;
+  }
+
+  let doorsSvg = "";
+  if (model.doorsType === "double"){
+    const gapMm = 4;
+    const gapPx = Math.max(6, gapMm*s);
+    const doorTotal = innerW - gapPx;
+
+    const left = model.parts.find(p=>p.name==="Front lewy")?.w ?? Math.floor((W-8)/2);
+    const right= model.parts.find(p=>p.name==="Front prawy")?.w ?? ((W-8)-left);
+    const ratioL = left/(left+right);
+
+    const doorWLpx = doorTotal * ratioL;
+    const doorWRpx = doorTotal - doorWLpx;
+
+    const L = {x:innerX, y:innerY, w:doorWLpx, h:innerH};
+    const R = {x:innerX + doorWLpx + gapPx, y:innerY, w:doorWRpx, h:innerH};
+
+    doorsSvg = `
+      <rect x="${L.x}" y="${L.y}" width="${L.w}" height="${L.h}"
+            fill="none" stroke="rgba(15,23,42,0.30)" stroke-width="1.6" stroke-dasharray="12 8"/>
+      <rect x="${R.x}" y="${R.y}" width="${R.w}" height="${R.h}"
+            fill="none" stroke="rgba(15,23,42,0.30)" stroke-width="1.6" stroke-dasharray="12 8"/>
+      ${swingDashedLines(L.x,L.y,L.w,L.h,"L")}
+      ${swingDashedLines(R.x,R.y,R.w,R.h,"R")}
+      ${hingeSquaresCustom(L.x,L.y,L.w,L.h,"L", model.hinge.topFromTop*s, model.hinge.bottomFromBottom*s)}
+      ${hingeSquaresCustom(R.x,R.y,R.w,R.h,"R", model.hinge.topFromTop*s, model.hinge.bottomFromBottom*s)}
+    `;
+  } else if (model.doorsType === "single"){
+    const hingeSide = model.hingeSide || "L";
+    doorsSvg = `
+      <rect x="${innerX}" y="${innerY}" width="${innerW}" height="${innerH}"
+            fill="none" stroke="rgba(15,23,42,0.30)" stroke-width="1.6" stroke-dasharray="12 8"/>
+      ${swingDashedLines(innerX,innerY,innerW,innerH,hingeSide)}
+      ${hingeSquaresCustom(innerX,innerY,innerW,innerH,hingeSide, model.hinge.topFromTop*s, model.hinge.bottomFromBottom*s)}
+    `;
+  } else if (model.doorsType === "cargo"){
+    doorsSvg = `
+      <rect x="${innerX}" y="${innerY}" width="${innerW}" height="${innerH}"
+            fill="none" stroke="rgba(15,23,42,0.30)" stroke-width="1.6" stroke-dasharray="12 8"/>
+      ${dashedX(innerX, innerY, innerW, innerH)}
+    `;
+  } else if (model.doorsType === "zmywarka"){
+    doorsSvg = `
+      <rect x="${x0}" y="${y0}" width="${cabW}" height="${cabH}"
+            fill="none" stroke="rgba(15,23,42,0.30)" stroke-width="1.8" stroke-dasharray="12 8"/>
+      ${dashedV(x0, y0, cabW, cabH)}
+    `;
+  }
+
+  const dimOffset = 30;
+  const wY = y0 + cabH + dimOffset;
+  const hX = x0 - dimOffset;
+
+  const dimsSvg = `
+    ${extLine(x0, y0+cabH, x0, wY)}
+    ${extLine(x0+cabW, y0+cabH, x0+cabW, wY)}
+    ${dimLine(x0, wY, x0+cabW, wY, String(W))}
+    ${extLine(hX, y0, x0, y0)}
+    ${extLine(hX, y0+cabH, x0, y0+cabH)}
+    ${dimLine(hX, y0, hX, y0+cabH, String(H))}
+  `;
+
+  return `
+    <svg width="100%" style="max-width:980px" viewBox="0 0 ${paperW} ${paperH}" xmlns="http://www.w3.org/2000/svg">
+      ${svgDefs()}
+      <rect x="10" y="10" width="${paperW-20}" height="${paperH-20}" fill="white" stroke="rgba(15,23,42,0.25)"/>
+      <text x="${margin.l}" y="34" font-size="18" font-weight="700" fill="rgba(15,23,42,0.9)">WIDOK OD PRZODU (${model.title})</text>
+      ${outline}
+      ${carcass}
+      ${shelvesSvg}
+      ${doorsSvg}
+      ${dimsSvg}
+    </svg>
+  `;
+}
+
+// ---------- INPUT / STATE ----------
+const state = {
+  type: el("type").value,
+  W: 600, H: 800, D: 520
+};
+
+function setWidthUIForType(){
+  const isDishwasher = (state.type === "ZMYWARKA");
+  el("WInputRow").style.display = isDishwasher ? "none" : "block";
+  el("WSelectRow").style.display = isDishwasher ? "block" : "none";
+}
+
+function applyRangesToInputs(){
+  const r = RULES[state.type] || RULES.D1;
+  setWidthUIForType();
+
+  // półki: CARGO i ZMYWARKA = 0
+  const shelvesSelect = el("shelves");
+  if (state.type === "CARGO" || state.type === "ZMYWARKA"){
+    shelvesSelect.value = "0";
+    shelvesSelect.disabled = true;
+  } else {
+    shelvesSelect.disabled = false;
+  }
+
+  // zmywarka: D=520 stałe i W z selecta 450/600
+  if (state.type === "ZMYWARKA"){
+    el("D").value = "520";
+    el("D").disabled = true;
+    state.D = 520;
+
+    state.W = Number(el("WSelect").value);
+  } else {
+    el("D").disabled = false;
+  }
+
+  // clamp
+  if (state.type !== "ZMYWARKA"){
+    state.W = clamp(state.W, r.W.min, r.W.max);
+    el("W").value = state.W;
+  }
+  state.H = clamp(state.H, r.H.min, r.H.max);
+  el("H").value = state.H;
+
+  state.D = clamp(state.D, r.D.min, r.D.max);
+  el("D").value = state.D;
+
+  // opis zakresów
+  el("rulesHint").textContent =
+    state.type==="ZMYWARKA"
+      ? `ZMYWARKA: W 450/600, H ${r.H.min}-${r.H.max}, D=520.`
+      : `Zakres: W ${r.W.min}-${r.W.max}, H ${r.H.min}-${r.H.max}, D ${r.D.min}-${r.D.max}.`;
+}
+
+function render(){
+  const type = state.type;
+
+  if (type === "ZMYWARKA"){
+    state.W = Number(el("WSelect").value);
+    state.H = Number(el("H").value) || state.H;
+    state.D = 520;
+    el("D").value = "520";
+  } else {
+    state.W = Number(el("W").value) || state.W;
+    state.H = Number(el("H").value) || state.H;
+    state.D = Number(el("D").value) || state.D;
+  }
+
+  // pilnuj zakresów
+  const r = RULES[type] || RULES.D1;
+  state.H = clamp(Math.round(state.H), r.H.min, r.H.max);
+  if (type !== "ZMYWARKA") state.W = clamp(Math.round(state.W), r.W.min, r.W.max);
+  state.D = clamp(Math.round(state.D), r.D.min, r.D.max);
+
+  if (type !== "ZMYWARKA"){
+    el("W").value = state.W;
+    el("D").value = state.D;
+  }
+  el("H").value = state.H;
+
+  const shelves = (type === "CARGO" || type === "ZMYWARKA") ? 0 : Number(el("shelves").value);
+  const hinge = el("hinge").value;
+
+  const model = computeCabinet(type, {W:state.W,H:state.H,D:state.D,shelves,hinge});
+  el("hingeRow").style.display = (model.doorsType === "single") ? "block" : "none";
+
+  el("drawing").innerHTML = renderDrawing(state.W,state.H,model);
+
+  const rows = model.parts.map(p=>`
+    <tr>
+      <td><b>${p.name}</b></td>
+      <td class="mono">${formatDims(p)}</td>
+      <td class="mono">${p.qty}</td>
+    </tr>
+  `).join("");
+
+  el("cutlist").innerHTML = `
+    <h3 style="margin:16px 0 6px;">Rozpiska formatek (${model.title})</h3>
+    <table>
+      <thead><tr><th>Element</th><th>Wymiary (mm)</th><th>Ilość</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+// events
+el("type").addEventListener("input", ()=>{
+  state.type = el("type").value;
+  applyRangesToInputs();
+  render();
+});
+el("W").addEventListener("input", render);
+el("H").addEventListener("input", render);
+el("D").addEventListener("input", render);
+el("WSelect").addEventListener("input", ()=>{ if(state.type==="ZMYWARKA") render(); });
+el("shelves").addEventListener("input", ()=>{ applyRangesToInputs(); render(); });
+el("hinge").addEventListener("input", render);
+
+// init
+applyRangesToInputs();
+render();
+</script>
+</body>
+</html>
